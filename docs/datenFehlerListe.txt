@@ -1,0 +1,3 @@
+# Dataset L1 2022
+# view(data[data$x_id=="6144dffbaca17b05ea45f696",]) # Das müsste Periode 2 sein nicht 1
+# data$Period[data$x_id=="6144dffbaca17b05ea45f696"]=2

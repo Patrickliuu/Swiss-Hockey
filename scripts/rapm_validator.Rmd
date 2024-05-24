@@ -1,0 +1,349 @@
+---
+title: "rapm_validator.Rmd"
+output: html_document
+date: "2023-12-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Import libraries.
+```{r, echo=FALSE}
+library(tidyverse)
+library(glmnet)
+library(data.table)
+library(ggplot2)
+```
+
+Load the data, .csv files, from data folder. Set data to backup. 
+```{r}
+file_path <- "../data/input/pbp_events_L1_S2022_STRegular_fixed_coords.csv"
+
+# Extract "L1_S20XX" using regular expression
+season_info <- sub(".*/pbp_events_(L\\d+_S\\d+)_STRegular_fixed_coords.csv", "\\1", file_path)
+```
+
+assign shifts_grouped_ev table from calculator script
+```{r}
+shifts_grouped_ev = paste0("shifts_grouped_ev_", season_info)
+assign(shifts_grouped_ev, readRDS(paste0("../data/temp/shifts_grouped_ev_", season_info, ".RData")))
+shifts_grouped_ev = get(shifts_grouped_ev)
+```
+
+Create final table of the 21/22 season
+```{r}
+team_names_L1_21 <- c("EVZ", "HCL", "ZSC", "FRI", "LHC", "GSHC", "EHCB", "HCD", "SCB", "SCRJ", "HCAP", "SCL") # 2021
+team_names_L1_22 <- c("EVZ", "FRI", "ZSC", "SCRJ", "HCD", "EHCB", "LHC", "GSHC", "HCL", "HCAP", "SCB", "SCL", "AJO") # 2022
+team_names_L2_21 <- c("EHCK", "AJO", "LAN", "HCS", "OLT", "THU", "VIS", "HCC", "GCK", "rockets", "EVZA", "WIN")
+team_names_L2_22 <- c("EHCK", "OLT", "HCC", "THU", "LAN", "VIS", "HCS", "GCK", "EVZA", "WIN", "rockets")
+
+final_positions <- seq(along = team_names_L1_22)
+
+final_table <- data.frame(Team = team_names_L1_22, Endplatzierung = final_positions)
+```
+
+Compute correlation between the average xGMP_60 value per team and the final table of the season
+```{r}
+rapm_with_team <- read_csv(paste0("../data/output/RapmEvenStrengthJoined_", season_info, ".csv"))
+
+ranked_table <- rapm_with_team %>%
+  group_by(Team) %>%
+  mutate(rank = dense_rank(desc(xGPM_60)))
+
+team_sum <- ranked_table %>%
+  group_by(Team) %>%
+  summarise(Avg_xGPM_60_Player = mean(xGPM_60, na.rm = TRUE))
+
+team_sum_final_table <- arrange(team_sum, desc(Avg_xGPM_60_Player))
+team_sum_final_table$Endplatzierung <- rank(desc(team_sum_final_table$Avg_xGPM_60_Player))
+
+merged_table <- merge(team_sum_final_table, final_table, by = "Team")
+
+correlation <- cor(merged_table$Endplatzierung.x, merged_table$Endplatzierung.y, method = "spearman")
+
+print(correlation)
+```
+
+Korrelation zwischen den beiden Saisons nach player rank
+```{r}
+players_22 <- read_csv("../data/output/RapmEvenStrengthJoined_L1_S2022.csv")
+players_21 <- read_csv("../data/output/RapmEvenStrengthJoined_L1_S2021.csv")
+
+players_21$players_rank <- rank(desc(players_21$xGPM_60), na.last = "keep")
+players_22$players_rank <- rank(desc(players_22$xGPM_60), na.last = "keep")
+
+merged_table <- merge(players_21, players_22, by = c("Player", "Team"))
+merged_table <- merged_table[merged_table$TimeOnIce.x >= 100 & merged_table$TimeOnIce.y >= 100, ]
+
+correlation <- cor(merged_table$players_rank.x, merged_table$players_rank.y, method = "spearman")
+print(correlation)
+```
+
+Korrelation zwischen den beiden Saisons nach xGPM_60 Wert der Spieler mit plot
+```{r}
+players_22 <- read_csv("../data/output/RapmEvenStrengthJoined_L2_S2022.csv")
+players_21 <- read_csv("../data/output/RapmEvenStrengthJoined_L2_S2021.csv")
+
+merged_table <- merge(players_21, players_22, by = c("Player", "Team")) # Without team also possible
+merged_table <- merged_table[merged_table$TimeOnIce.x >= 100 & merged_table$TimeOnIce.y >= 100, ]
+
+correlation <- cor(merged_table$xGPM_60.x, merged_table$xGPM_60.y, method = "pearson")
+print(correlation)
+
+p <- ggplot(merged_table, aes(x = xGPM_60.x, y = xGPM_60.y)) +
+  geom_point(size = 3, color = "black") +
+  geom_abline(slope = 1, intercept = 0, linetype = "solid", color = "blue", linewidth = 1) +
+  geom_smooth(method = "lm", color = "gray", se = FALSE, linewidth = 0.5) +
+  labs(
+    x = "xGPM60 2021",
+    y = "xGPM60 2022",
+    title = "Korrelation der xGPM60-Werte über zwei Saisons"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14, face = "bold")
+  ) +
+  guides(color = FALSE) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+print(p)
+```
+
+compute average shift lengths
+```{r}
+max_values <- tail(sort(shifts_grouped_ev$shift_length), 10)
+
+hist(shifts_grouped_ev$shift_length, breaks = 50, main = "Die Schichtlängen in der National League", xlab = "Schichtlänge [s]", col = "powderblue")
+mean_shift <- mean(na.omit(shifts_grouped_ev$shift_length))
+median_shift <- median(na.omit(shifts_grouped_ev$shift_length))
+
+abline(v = mean_shift, col = "red", lwd = 2)
+abline(v = median_shift, col = "pink", lwd = 2)
+ 
+text(x = 90, y = 20000, labels = paste("Median:", round(median_shift, 2)), col = "pink")
+text(x = 90, y = 25000, labels = paste("Mittelwert:", round(mean_shift, 2)), col = "red")
+
+```
+
+Calculate the summed up xG from all players while they where on the field
+```{r}
+shifts_long <- shifts_grouped_ev %>%
+  gather(key = "Player_position", value = "Player", h1.num:h6.num, a1.num:a6.num) %>%
+  mutate(
+    xG = ifelse(grepl("^h", Player_position), as.numeric(homexGF), as.numeric(awayxGF)),
+    IsGoalie = (Player == Home.Goalie) | (Player == Away.Goalie)
+  ) %>%
+  filter(!IsGoalie, Player != "MISSING_PLAYER") # Herausfiltern der Torhüter und "MISSING_PLAYER"
+
+xG_per_player <- shifts_long %>%
+  group_by(Player) %>%
+  summarise(TotalxG = sum(xG, na.rm = TRUE)) %>%
+  arrange(desc(TotalxG))
+```
+
+Caculate the time on ice from all players
+```{r}
+# Reshape the data to have one row per player per shift
+toi_data <- shifts_grouped_ev %>%
+  select(h1.num:h6.num,a1.num:a6.num,shift_length)
+
+toi_data <- toi_data %>%
+  gather(key = "Player_position", value = "Player", h1.num:h6.num, a1.num:a6.num) %>%
+  select(Player, shift_length)
+
+# Calculate TOI for each player
+toi <- toi_data %>%
+  group_by(Player) %>%
+  summarise(TimeOnIce = sum(shift_length, na.rm = TRUE) / 60) %>% # from seconds -> minutes
+  arrange(desc(TimeOnIce))
+```
+
+calculate xG values for all players per 60
+```{r}
+actual_xG60 <- left_join(xG_per_player, toi, by = "Player")
+actual_xG60 <- actual_xG60 %>%
+  mutate(actual_xG_60 = (TotalxG / TimeOnIce) * 60)
+
+write_excel_csv(actual_xG60, paste0("../data/temp/actual_xG60_per_Player_", season_info, ".csv"))
+```
+
+calculate correlation between xGF_60 and actual_xG60_per_player
+```{r}
+final_player_stats <- read_csv(paste0("../data/output/RapmEvenStrengthJoined_", season_info, ".csv"))
+actual_xG60_per_player <- read_csv(paste0("../data/temp/actual_xG60_per_Player_", season_info, ".csv"))
+
+final_player_stats_filtered <- final_player_stats %>%
+  filter(TimeOnIce >= 100) %>%
+  arrange(desc(xGF_60))
+
+actual_xG60_per_player_filtered <- actual_xG60_per_player %>%
+  filter(TimeOnIce >= 100) %>%
+  arrange(desc(actual_xG_60))
+
+combined_data <- merge(final_player_stats_filtered, actual_xG60_per_player_filtered, by = "Player")
+
+pearson_corr <- cor(combined_data$xGF_60, combined_data$actual_xG_60, method = "pearson")
+
+spearman_corr <- cor(combined_data$xGF_60, combined_data$actual_xG_60, method = "spearman")
+
+p <- ggplot(combined_data, aes(x = xGF_60, y = actual_xG_60)) +
+  geom_point(size = 3, color = "black") +
+  geom_smooth(method = "lm", color = "blue", se = FALSE) +
+  labs(
+    x = "xGF pro 60 Minuten",
+    y = "Tatsächliche xG pro 60 Minuten",
+    title = "Korrelation zwischen xGF und tatsächlichen xG"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    legend.position = "none",  # Legende entfernen
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14, face = "bold"),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank()
+  )
+
+print(p)
+
+print(spearman_corr)
+```
+
+```{r}
+# Lets Run all the datasets to make some awesome plots:
+# Define the folder path
+folder_path <- "../data/input/"
+
+# Define the regular expression pattern to match file names
+pattern <- "pbp_events_(L\\d+_S\\d+)_STRegular_fixed_coords.csv"
+
+# Get a list of file names that match the pattern in the folder
+file_list <- list.files(path = folder_path, pattern = pattern, full.names = TRUE)
+print(file_list)
+
+# Take a bath or a nice lunchbreak!
+for (file_path in file_list) {
+
+# Set the file_path variable in the environment of the rapm_calculator.R script
+  assign("file_path", file_path, envir = environment())
+  # Run the rapm_calculator.R script
+  source("rapm_calculator.R")
+}
+```
+
+```{r}
+library(ggplot2)
+# Lets check for multiple seasons, leagues if our ridge regression is doing what she intends to!
+# Filter defenders with less than 500 minutes of ToI
+filtered_defenders <- rbind(filtered_defenders_L1_S2021,filtered_defenders_L1_S2022,filtered_defenders_L2_S2021,filtered_defenders_L2_S2022)
+
+# Filter strikers with less than 500 minutes of ToI
+filtered_striker <- rbind(filtered_strikers_L1_S2021,filtered_strikers_L1_S2022,filtered_strikers_L2_S2021,filtered_strikers_L2_S2022)
+
+# Create scatter plot for defenders
+plot_defenders_xGA <- ggplot(data = filtered_defenders, aes(x = TimeOnIce, y = xGA_60)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "steelblue") +
+  ylim(-1, 1) +
+  labs(x = "Eiszeit [min]", y = "xGA_60") +
+  theme_minimal()
+# Create scatter plot for strikers
+
+plot_strikers_xGA <- ggplot(data = filtered_strikers, aes(x = TimeOnIce, y = xGA_60)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "hotpink") +
+  ylim(-1, 1) +
+  labs(x = "Eiszeit [min]", y = "xGA_60") +
+  theme_minimal()
+
+plot_defenders_xGF <- ggplot(data = filtered_defenders, aes(x = TimeOnIce, y = xGF_60)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "steelblue") +
+  ylim(-1, 1) +
+  labs(x = "Eiszeit [min]", y = "xGF_60") +
+  theme_minimal()
+
+# Create scatter plot for strikers
+plot_strikers_xGF <- ggplot(data = filtered_strikers, aes(x = TimeOnIce, y = xGF_60)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "hotpink") +
+  ylim(-1, 1) +
+  labs(x = "Eiszeit [min]", y = "xGF_60") +
+  theme_minimal()
+
+plot_defenders_xGPM_60 <- ggplot(data = filtered_defenders, aes(x = TimeOnIce, y = xGPM_60)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "steelblue") +
+  ylim(-1, 1) +
+  labs(x = "Eiszeit [min]", y = "xGPM_60") +
+  theme_minimal()
+
+# Create scatter plot for strikers
+plot_strikers_xGPM_60 <- ggplot(data = filtered_strikers, aes(x = TimeOnIce, y = xGPM_60)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "hotpink") +
+  ylim(-1, 1) +
+  labs(x = "Eiszeit [min]", y = "xGPM_60") +
+  theme_minimal() 
+
+library(gridExtra)
+grid_plot <- grid.arrange(plot_defenders_xGF, plot_strikers_xGF, plot_defenders_xGA, plot_strikers_xGA,plot_defenders_xGPM_60,plot_strikers_xGPM_60, ncol = 2, nrow = 3)
+
+ggsave("../data/output/xGF_60_ridge.png", grid_plot)
+```
+
+```{r}
+# Create scatter plot for defenders
+ggplot(data = rapm_defender, aes(x = TimeOnIce, y = xGA_60)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "steelblue") +
+  ylim(-1, 1) +
+  labs(x = "Time On Ice", y = "xGA_60") +
+  theme_minimal()
+which.max(rapm_defender$xGA_60)
+rapm_defender[146,] # Helfer Even, spielte bei AJO 23 Partien und erhielt eine unmenge an TOREN!
+```
+
+lets do the same plot for the linear regression
+```{r}
+filtered_unique_500 <- filtered_unique[filtered_unique$TimeOnIce < 500, ]
+filtered_unique_500 <- na.omit(filtered_unique_500)
+filtered_unique_500
+
+ggplot(data = filtered_unique_500, aes(x = TimeOnIce, y = values.Estimate)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "tomato") +
+  ylim(-2.5, 2.5) +
+  labs(x = "Eiszeit [min]", y = "xGF_60") +
+  theme_minimal()
+```
+
+# Alle Datensätze für lineare Regression vorbereiten:
+```{r}
+# Define the directory where RData files are located
+data_dir <- "../data/temp"  # Update with your directory path
+
+# List of RData files to process
+file_list <- list.files(path = data_dir, pattern = "^RAPM_xGF_L\\d{1}\\_S\\d{4}\\.RData$", full.names = TRUE)
+print(file_list)
+
+# Iterate over the list of file paths and process each file
+for (temp_file_path in file_list) {
+  print(temp_file_path)
+  assign("temp_file_path", temp_file_path, envir = environment())
+  # Run the rapm_calculator.R script
+  source("linear_regression_validation.R")
+}
+```
+
+
+```{r}
+filtered_linear <- rbind(filtered_linear_L1_S2021,filtered_linear_L1_S2022,filtered_linear_L2_S2021,filtered_linear_L2_S2022)
+filtered_linear <- filtered_linear[filtered_linear$TimeOnIce < 500, ]
+filtered_linear <- na.omit(filtered_linear)
+
+# Create scatter plot with legend
+ggplot(data = filtered_linear, aes(x = TimeOnIce, y = values.Estimate)) +
+  geom_point(shape = 21, size = 3, alpha = 0.3, fill = "tomato") +
+  ylim(-2.5, 2.5) +
+  labs(x = "Eiszeit [min]", y = "xGF_60 Lineare Regression") +
+  theme_minimal()
+ggsave("../data/output/xGF_60_lin.png")
+```
